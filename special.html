@@ -2,19 +2,32 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>VFX Particle Hand Controller</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ultimate Hand VFX Suite</title>
     <style>
-        body { margin: 0; background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
-        #ui { position: absolute; top: 20px; left: 20px; color: #fff; text-shadow: 0 0 10px cyan; pointer-events: none; }
-        #video-preview { position: absolute; bottom: 20px; right: 20px; width: 160px; height: 120px; border: 1px solid #444; border-radius: 8px; transform: scaleX(-1); }
-        .hint { font-size: 0.8em; color: #888; margin-top: 5px; }
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; color: white; }
+        #ui { position: absolute; top: 20px; left: 20px; pointer-events: none; z-index: 10; }
+        #gesture-display { font-size: 24px; text-shadow: 0 0 10px cyan; margin: 0; }
+        .hint { font-size: 14px; color: #888; margin-top: 5px; }
+        #video-preview { position: absolute; bottom: 20px; right: 20px; width: 160px; height: 120px; border: 1px solid #333; border-radius: 8px; transform: scaleX(-1); }
+        #controls { position: absolute; bottom: 20px; left: 20px; z-index: 10; }
+        button { 
+            padding: 12px 24px; background: rgba(0, 255, 255, 0.1); border: 1px solid cyan; 
+            color: white; cursor: pointer; font-weight: bold; border-radius: 5px; transition: 0.3s;
+        }
+        button:hover { background: cyan; color: black; box-shadow: 0 0 20px cyan; }
     </style>
 </head>
 <body>
     <div id="ui">
-        <h2 id="gesture-display">Initializing Camera...</h2>
-        <div class="hint">Pinch: Heart | Peace: Flower | Point: Saturn | Punch: EXPLODE</div>
+        <h2 id="gesture-display">Click anywhere to start Audio</h2>
+        <div class="hint">Pinch: Heart | 2-Fingers: Vortex | Peace: Flower | Point: Saturn | Punch: EXPLODE</div>
     </div>
+
+    <div id="controls">
+        <button onclick="takeScreenshot()">📸 CAPTURE ART</button>
+    </div>
+
     <video id="webcam" style="display:none" playsinline></video>
     <canvas id="video-preview"></canvas>
 
@@ -23,14 +36,13 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
     <script>
-        // --- 1. SCENE & RENDERER ---
+        // --- 1. THREE.JS ENGINE SETUP ---
         const scene = new THREE.Scene();
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        // --- 2. PARTICLE SYSTEM CONFIG ---
         const particleCount = 8000;
         const geometry = new THREE.BufferGeometry();
         const posArray = new Float32Array(particleCount * 3);
@@ -40,163 +52,172 @@
         const velocities = new Float32Array(particleCount * 3).fill(0);
 
         for(let i=0; i < particleCount * 3; i++) {
-            posArray[i] = (Math.random() - 0.5) * 20;
+            posArray[i] = (Math.random() - 0.5) * 30;
             targetPos[i] = posArray[i];
-            targetCol[i] = 1.0; 
         }
 
         geometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
         geometry.setAttribute('color', new THREE.BufferAttribute(colArray, 3));
 
-        // Using a built-in canvas texture for a glowing "soft circle"
-        const createCircleTexture = () => {
-            const canvas = document.createElement('canvas');
-            canvas.width = 64; canvas.height = 64;
-            const ctx = canvas.getContext('2d');
-            const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-            gradient.addColorStop(0, 'rgba(255,255,255,1)');
-            gradient.addColorStop(0.2, 'rgba(255,255,255,0.8)');
-            gradient.addColorStop(1, 'rgba(255,255,255,0)');
-            ctx.fillStyle = gradient;
-            ctx.fillRect(0, 0, 64, 64);
-            const tex = new THREE.CanvasTexture(canvas);
-            return tex;
-        };
-
         const material = new THREE.PointsMaterial({
-            size: 0.12,
-            vertexColors: true,
-            map: createCircleTexture(),
-            transparent: true,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false
+            size: 0.15, vertexColors: true, transparent: true,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+            map: new THREE.CanvasTexture(createCircleCanvas())
         });
+
+        function createCircleCanvas() {
+            const c = document.createElement('canvas'); c.width = 64; c.height = 64;
+            const ctx = c.getContext('2d');
+            const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+            g.addColorStop(0, 'white'); g.addColorStop(0.4, 'rgba(255,255,255,0.5)'); g.addColorStop(1, 'transparent');
+            ctx.fillStyle = g; ctx.fillRect(0,0,64,64);
+            return c;
+        }
 
         const points = new THREE.Points(geometry, material);
         scene.add(points);
         camera.position.z = 25;
 
-        // --- 3. MATH TEMPLATES ---
+        // --- 2. AUDIO ENGINE (THEREMIN) ---
+        let audioCtx, osc, gain;
+        let audioStarted = false;
+        function initAudio() {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            osc = audioCtx.createOscillator();
+            gain = audioCtx.createGain();
+            osc.type = 'sine'; osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); gain.gain.setValueAtTime(0, audioCtx.currentTime);
+            audioStarted = true;
+            document.getElementById('gesture-display').innerText = "System Ready";
+        }
+        window.addEventListener('click', () => { if(!audioStarted) initAudio(); });
+
+        // --- 3. SHAPES & VFX ---
+        let currentMode = 'cloud';
         const setTarget = (i, x, y, z, r, g, b) => {
             targetPos[i*3]=x; targetPos[i*3+1]=y; targetPos[i*3+2]=z;
             targetCol[i*3]=r; targetCol[i*3+1]=g; targetCol[i*3+2]=b;
         };
 
         const shapes = {
-            cloud: () => { for(let i=0; i<particleCount; i++) setTarget(i, (Math.random()-0.5)*30, (Math.random()-0.5)*20, (Math.random()-0.5)*10, 0.2, 0.5, 1); },
+            cloud: () => { for(let i=0; i<particleCount; i++) setTarget(i, (Math.random()-0.5)*35, (Math.random()-0.5)*25, (Math.random()-0.5)*10, 0.1, 0.4, 0.8); },
             heart: () => {
                 for(let i=0; i<particleCount; i++) {
-                    const t = (i/particleCount) * Math.PI * 2;
-                    const x = 16 * Math.pow(Math.sin(t), 3);
-                    const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
-                    setTarget(i, x*0.6, y*0.6, 0, 1, 0.1, 0.2);
+                    const t = (i/particleCount)*Math.PI*2;
+                    const x = 16*Math.pow(Math.sin(t),3), y = 13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t);
+                    setTarget(i, x*0.6, y*0.6, 0, 1, 0.05, 0.2);
+                }
+            },
+            vortex: () => {
+                for(let i=0; i<particleCount; i++) {
+                    const a = (i/particleCount)*Math.PI*40, d = (i/particleCount)*15;
+                    setTarget(i, Math.cos(a)*d, Math.sin(a)*d, (Math.random()-0.5)*5, 0, 1, 0.6);
                 }
             },
             flower: () => {
                 for(let i=0; i<particleCount; i++) {
-                    const t = (i/particleCount) * Math.PI * 2;
-                    const r = 8 * Math.cos(5 * t);
-                    setTarget(i, r*Math.cos(t), r*Math.sin(t), Math.sin(t*10), 0.8, 0.2, 1);
+                    const t = (i/particleCount)*Math.PI*2, r = 8*Math.cos(5*t);
+                    setTarget(i, r*Math.cos(t), r*Math.sin(t), 0, 0.7, 0.2, 1);
                 }
             },
             saturn: () => {
                 for(let i=0; i<particleCount; i++) {
-                    if(i < particleCount*0.3) { // Planet
-                        const u = Math.random(), v = Math.random();
-                        const theta = 2*Math.PI*u, phi = Math.acos(2*v-1);
-                        setTarget(i, 5*Math.sin(phi)*Math.cos(theta), 5*Math.sin(phi)*Math.sin(theta), 5*Math.cos(phi), 1, 0.8, 0.5);
-                    } else { // Rings
-                        const a = Math.random()*Math.PI*2, d = 7 + Math.random()*4;
+                    if(i < particleCount*0.3) {
+                        const u = Math.random(), v = Math.random(), th = 2*Math.PI*u, ph = Math.acos(2*v-1);
+                        setTarget(i, 5*Math.sin(ph)*Math.cos(th), 5*Math.sin(ph)*Math.sin(th), 5*Math.cos(ph), 1, 0.9, 0.5);
+                    } else {
+                        const a = Math.random()*Math.PI*2, d = 7+Math.random()*4;
                         setTarget(i, Math.cos(a)*d, Math.sin(a)*d*0.2, Math.sin(a)*d, 1, 0.6, 0.1);
                     }
                 }
             },
             explode: () => {
                 for(let i=0; i<particleCount; i++) {
-                    const force = 1.5;
-                    velocities[i*3] = (Math.random()-0.5)*force;
-                    velocities[i*3+1] = (Math.random()-0.5)*force;
-                    velocities[i*3+2] = (Math.random()-0.5)*force;
+                    velocities[i*3] = (Math.random()-0.5)*2; velocities[i*3+1] = (Math.random()-0.5)*2; velocities[i*3+2] = (Math.random()-0.5)*2;
                     targetCol[i*3]=1; targetCol[i*3+1]=1; targetCol[i*3+2]=1;
                 }
+                if(audioStarted) playExplosionSound();
             }
         };
 
-        // --- 4. GESTURE RECOGNITION ---
+        function playExplosionSound() {
+            const b = audioCtx.createOscillator(), bg = audioCtx.createGain();
+            b.type = 'triangle'; b.frequency.setValueAtTime(100, audioCtx.currentTime);
+            b.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+            bg.gain.setValueAtTime(0.3, audioCtx.currentTime); bg.gain.linearRampToValueAtTime(0, audioCtx.currentTime+0.5);
+            b.connect(bg); bg.connect(audioCtx.destination); b.start(); b.stop(audioCtx.currentTime+0.5);
+        }
+
+        // --- 4. GESTURE & HANDS ---
         let lastZ = 0;
-        const gestureDisplay = document.getElementById('gesture-display');
-
-        const onResults = (results) => {
-            if (results.multiHandLandmarks && results.multiHandLandmarks[0]) {
-                const hand = results.multiHandLandmarks[0];
-                const wristZ = hand[0].z;
-                
-                // Detect Punch (Explosion)
-                if (lastZ - wristZ > 0.08) {
-                    gestureDisplay.innerText = "🔥 EXPLOSION 🔥";
-                    shapes.explode();
-                } else {
-                    const isIndexUp = hand[8].y < hand[6].y;
-                    const isMiddleUp = hand[12].y < hand[10].y;
-                    const isPinch = Math.hypot(hand[4].x - hand[20].x, hand[4].y - hand[20].y) < 0.06;
-
-                    if (isPinch) { gestureDisplay.innerText = "❤️ Heart Mode"; shapes.heart(); }
-                    else if (isIndexUp && isMiddleUp) { gestureDisplay.innerText = "🌸 Flower Mode"; shapes.flower(); }
-                    else if (isIndexUp) { gestureDisplay.innerText = "🪐 Saturn Mode"; shapes.saturn(); }
-                    else { gestureDisplay.innerText = "☁️ Cloud Mode"; shapes.cloud(); }
-                }
-                lastZ = wristZ;
-            }
-        };
-
-        // --- 5. INITIALIZE TRACKING ---
-        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
         hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
-        hands.onResults(onResults);
+        hands.onResults((res) => {
+            if (res.multiHandLandmarks && res.multiHandLandmarks[0]) {
+                const hand = res.multiHandLandmarks[0];
+                const wrist = hand[0];
+                
+                // Audio Mapping
+                if (audioStarted) {
+                    osc.frequency.setTargetAtTime((1-wrist.y)*600+200, audioCtx.currentTime, 0.1);
+                    gain.gain.setTargetAtTime(Math.max(0, Math.min(0.1, (wrist.z*-5)+0.2)), audioCtx.currentTime, 0.1);
+                }
 
-        const videoElement = document.getElementById('webcam');
-        const cameraFeed = new Camera(videoElement, {
-            onFrame: async () => { await hands.send({image: videoElement}); },
-            width: 640, height: 480
+                // Gesture Logic
+                if (lastZ - wrist.z > 0.08) { currentMode = 'explode'; shapes.explode(); }
+                else {
+                    const isIndex = hand[8].y < hand[6].y, isMiddle = hand[12].y < hand[10].y;
+                    const isPinch = Math.hypot(hand[4].x - hand[20].x, hand[4].y - hand[20].y) < 0.06;
+                    
+                    if (isPinch) { currentMode = 'heart'; shapes.heart(); }
+                    else if (isIndex && isMiddle) { currentMode = 'vortex'; shapes.vortex(); }
+                    else if (isIndex) { currentMode = 'saturn'; shapes.saturn(); }
+                    else { currentMode = 'cloud'; shapes.cloud(); }
+                }
+                lastZ = wrist.z;
+                document.getElementById('gesture-display').innerText = currentMode.toUpperCase();
+            } else if (audioStarted) { gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.5); }
         });
-        cameraFeed.start();
 
-        // --- 6. ANIMATION ENGINE ---
+        const v = document.getElementById('webcam');
+        const cam = new Camera(v, { onFrame: async () => { await hands.send({image: v}); }, width: 640, height: 480 });
+        cam.start();
+
+        // --- 5. ANIMATION & SCREENSHOT ---
         function animate() {
             requestAnimationFrame(animate);
             const pos = geometry.attributes.position.array;
             const col = geometry.attributes.color.array;
 
-            for(let i=0; i < particleCount * 3; i++) {
-                // Apply physics
-                pos[i] += velocities[i];
-                velocities[i] *= 0.92; // Friction
-
-                // Elastic pull to target
-                const pull = (targetPos[i] - pos[i]) * 0.08;
-                pos[i] += pull;
-
-                // Color transition
-                col[i] += (targetCol[i] - col[i]) * 0.1;
+            for(let i=0; i < particleCount * 3; i += 3) {
+                if (currentMode === 'vortex') {
+                    const x = pos[i], y = pos[i+1];
+                    pos[i] = x * Math.cos(0.05) - y * Math.sin(0.05);
+                    pos[i+1] = x * Math.sin(0.05) + y * Math.cos(0.05);
+                }
+                for(let j=0; j<3; j++) {
+                    pos[i+j] += velocities[i+j] + (targetPos[i+j] - pos[i+j]) * 0.08;
+                    velocities[i+j] *= 0.92;
+                    col[i+j] += (targetCol[i+j] - col[i+j]) * 0.1;
+                }
             }
-
             geometry.attributes.position.needsUpdate = true;
             geometry.attributes.color.needsUpdate = true;
-            points.rotation.y += 0.003;
-
-            // Subtle Camera Shake on high velocity
-            if(Math.abs(velocities[0]) > 0.05) {
-                camera.position.x = (Math.random()-0.5)*0.2;
-                camera.position.y = (Math.random()-0.5)*0.2;
-            }
-
+            points.rotation.y += 0.002;
             renderer.render(scene, camera);
         }
         animate();
 
+        function takeScreenshot() {
+            renderer.render(scene, camera);
+            const link = document.createElement('a');
+            link.download = `art-${Date.now()}.png`;
+            link.href = renderer.domElement.toDataURL('image/png');
+            link.click();
+        }
+
         window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
+            camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
     </script>
